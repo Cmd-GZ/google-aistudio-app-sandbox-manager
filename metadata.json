@@ -1,6 +1,5 @@
 {
   "name": "Sandbox Workspace Studio",
   "description": "In-preview sandbox file manager, code viewer and editor, interactive terminal, and portable drop-in module for app building sessions.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "requestFramePermissions": []
 }

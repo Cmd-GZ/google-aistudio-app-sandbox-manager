@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import dotenv from 'dotenv';
 import express from 'express';
@@ -8,9 +9,11 @@ dotenv.config();
 
 const PORT = Number(process.env.PORT) || 3000;
 const isProd = process.env.NODE_ENV === 'production';
+const disableHmr = process.env.DISABLE_HMR === 'true';
 
 async function startServer() {
   const app = express();
+  const httpServer = http.createServer(app);
 
   // Mount portable sandbox file manager & terminal API
   app.use('/api/sandbox', createSandboxRouter({ defaultDir: process.cwd() }));
@@ -20,7 +23,8 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR !== 'true',
+        hmr: disableHmr ? false : { server: httpServer },
+        ws: { server: httpServer },
       },
       appType: 'spa',
     });
@@ -38,7 +42,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Sandbox Workspace Studio listening on http://0.0.0.0:${PORT}`);
   });
 }
