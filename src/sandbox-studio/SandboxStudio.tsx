@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
   CheckSquare,
+  ChevronDown,
   ChevronRight,
   Download,
   File as FileIcon,
@@ -9,11 +10,9 @@ import {
   Folder,
   FolderArchive,
   FolderPlus,
-  FolderUp,
   Link2,
   Moon,
   Pencil,
-  RefreshCw,
   Search,
   Square,
   Sun,
@@ -31,7 +30,6 @@ import {
   FileEntry,
   OpenFileTab,
   SandboxStudioMode,
-  WorkspaceInfo,
 } from './types';
 import { formatBytes, formatTimestamp, getBasename, getParentPath, joinPosixPath } from './utils';
 
@@ -40,8 +38,6 @@ export interface SandboxStudioProps {
   mode?: SandboxStudioMode;
   /** Backend API mount prefix. Defaults to '/api/sandbox'. */
   apiBaseUrl?: string;
-  /** Optional callback to switch mode externally if needed. */
-  onModeChange?: (mode: SandboxStudioMode) => void;
 }
 
 type LayoutView = 'split' | 'explorer' | 'terminal';
@@ -104,16 +100,10 @@ async function collectDroppedItems(dataTransfer: DataTransfer): Promise<DroppedF
 }
 
 export const SandboxStudio: React.FC<SandboxStudioProps> = ({
-  mode: propMode = 'standalone',
+  mode = 'standalone',
   apiBaseUrl = '/api/sandbox',
-  onModeChange,
 }) => {
   const client = useMemo(() => createSandboxClient(apiBaseUrl), [apiBaseUrl]);
-
-  const [internalMode, setInternalMode] = useState<SandboxStudioMode>(propMode);
-  useEffect(() => {
-    setInternalMode(propMode);
-  }, [propMode]);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isDark, setIsDark] = useState<boolean>(() =>
@@ -121,7 +111,6 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
   );
 
   // Workspace & FS state
-  const [info, setInfo] = useState<WorkspaceInfo | null>(null);
   const [currentDir, setCurrentDir] = useState('');
   const [parentDir, setParentDir] = useState<string | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<BreadcrumbItem[]>([]);
@@ -137,12 +126,12 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
   const [centerView, setCenterView] = useState<'directory' | 'editor'>('directory');
 
-  // Layout & modals
+  // Layout & UI controls
   const [layoutView, setLayoutView] = useState<LayoutView>('split');
   const [terminalHeight, setTerminalHeight] = useState(300);
   const [terminalMaximized, setTerminalMaximized] = useState(false);
-  const [pendingOpenCwd, setPendingOpenCwd] = useState<{ path: string; nonce: number } | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
+  const [uploadMenuOpen, setUploadMenuOpen] = useState(false);
 
   // Upload & toast feedback
   const [isDragging, setIsDragging] = useState(false);
@@ -151,6 +140,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadMenuRef = useRef<HTMLDivElement | null>(null);
   const dragCounterRef = useRef(0);
   const resizingRef = useRef(false);
 
@@ -171,16 +161,25 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
     }
   };
 
-  // Fetch workspace info on mount
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (uploadMenuRef.current && !uploadMenuRef.current.contains(e.target as Node)) {
+        setUploadMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  // Fetch initial directory
   useEffect(() => {
     client
       .getInfo()
       .then((wsInfo) => {
-        setInfo(wsInfo);
         setCurrentDir((prev) => prev || wsInfo.defaultPath);
       })
       .catch((err) => {
-        showNotice('error', err instanceof Error ? err.message : '加载工作区信息失败');
+        showNotice('error', err instanceof Error ? err.message : 'Failed to load workspace info');
       });
   }, [client, showNotice]);
 
@@ -195,7 +194,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
         setBreadcrumbs(listRes.breadcrumbs);
         setSelectedPaths(new Set());
       } catch (err) {
-        showNotice('error', err instanceof Error ? err.message : '读取目录失败');
+        showNotice('error', err instanceof Error ? err.message : 'Failed to list directory');
       } finally {
         setLoadingList(false);
       }
@@ -227,7 +226,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
     };
   }, []);
 
-  const refreshAll = useCallback(async () => {
+  const syncAfterMutation = useCallback(async () => {
     setTreeRefreshNonce((n) => n + 1);
     if (currentDir) {
       await loadDirectory(currentDir);
@@ -280,7 +279,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
           )
         );
       } catch (err) {
-        showNotice('error', err instanceof Error ? err.message : '打开文件失败');
+        showNotice('error', err instanceof Error ? err.message : 'Failed to open file');
         setOpenTabs((prev) => prev.filter((t) => t.path !== filePath));
       }
     },
@@ -313,15 +312,11 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
           t.path === path ? { ...t, savedContent: tab.content, size: res.size, mtimeMs: res.mtimeMs } : t
         )
       );
-      showNotice('info', `已保存 ${tab.name}`);
-      void refreshAll();
+      showNotice('info', `Saved ${tab.name}`);
+      void syncAfterMutation();
     } catch (err) {
-      showNotice('error', err instanceof Error ? err.message : '保存失败');
+      showNotice('error', err instanceof Error ? err.message : 'Failed to save file');
     }
-  };
-
-  const handleRevertFile = (path: string) => {
-    setOpenTabs((prev) => prev.map((t) => (t.path === path ? { ...t, content: t.savedContent } : t)));
   };
 
   const handleUploadBatch = async (files: File[], relativePaths?: string[]) => {
@@ -329,10 +324,10 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
     setUploadProgress(0);
     try {
       const res = await client.uploadFiles(files, currentDir, relativePaths, (pct) => setUploadProgress(pct));
-      showNotice('info', `成功上传 ${res.uploaded.length} 个文件到 ${currentDir}`);
-      await refreshAll();
+      showNotice('info', `Uploaded ${res.uploaded.length} item(s) to ${currentDir}`);
+      await syncAfterMutation();
     } catch (err) {
-      showNotice('error', err instanceof Error ? err.message : '上传失败');
+      showNotice('error', err instanceof Error ? err.message : 'Upload failed');
     } finally {
       setUploadProgress(null);
     }
@@ -362,7 +357,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
         const target = joinPosixPath(dialog.baseDir, clean);
         await client.writeFile(target, '');
         setDialog(null);
-        await refreshAll();
+        await syncAfterMutation();
         await handleOpenFile(target);
       } else if (dialog.kind === 'new-folder') {
         const clean = dialog.value.trim();
@@ -370,7 +365,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
         const target = joinPosixPath(dialog.baseDir, clean);
         await client.mkdir(target);
         setDialog(null);
-        await refreshAll();
+        await syncAfterMutation();
       } else if (dialog.kind === 'rename') {
         const clean = dialog.value.trim();
         if (!clean || clean === dialog.entry.name) {
@@ -389,18 +384,18 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
           setActiveFilePath(newPath);
         }
         setDialog(null);
-        await refreshAll();
+        await syncAfterMutation();
       } else if (dialog.kind === 'delete') {
         for (const p of dialog.paths) {
           await client.deletePath(p);
           setOpenTabs((prev) => prev.filter((t) => t.path !== p && !t.path.startsWith(`${p}/`)));
         }
         setDialog(null);
-        showNotice('info', `已删除 ${dialog.paths.length} 项`);
-        await refreshAll();
+        showNotice('info', `Deleted ${dialog.paths.length} item(s)`);
+        await syncAfterMutation();
       }
     } catch (err) {
-      showNotice('error', err instanceof Error ? err.message : '操作失败');
+      showNotice('error', err instanceof Error ? err.message : 'Operation failed');
     }
   };
 
@@ -427,14 +422,6 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
     }
   };
 
-  const switchMode = (nextMode: SandboxStudioMode) => {
-    setInternalMode(nextMode);
-    if (nextMode === 'drawer') {
-      setDrawerOpen(true);
-    }
-    onModeChange?.(nextMode);
-  };
-
   const renderWorkspace = () => {
     return (
       <div
@@ -456,7 +443,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
         onDrop={(e) => void handleDrop(e)}
       >
         {/* Top Bar Contract: 3 zones (Wordmark — Nav Links — 1 Primary Action) */}
-        <header className="flex items-center justify-between gap-8 px-5 py-3 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E131D] shrink-0">
+        <header className="flex items-center justify-between gap-8 px-5 py-2.5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E131D] shrink-0">
           <span className="text-base font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap shrink-0">
             Sandbox Studio
           </span>
@@ -471,7 +458,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
               }`}
             >
-              分栏工作区
+              Split
             </button>
             <button
               type="button"
@@ -482,7 +469,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
               }`}
             >
-              文件浏览
+              Files
             </button>
             <button
               type="button"
@@ -493,204 +480,219 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                   : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
               }`}
             >
-              终端控制台
+              Terminal
             </button>
           </nav>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {internalMode === 'drawer' ? (
+          {/* Unified Upload CTA (supports both files & recursive folders) */}
+          <div className="flex items-center gap-2 shrink-0" ref={uploadMenuRef}>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setUploadMenuOpen((v) => !v)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white whitespace-nowrap shrink-0 transition-colors"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Upload</span>
+                <ChevronDown className="w-3.5 h-3.5 opacity-80" />
+              </button>
+
+              {uploadMenuOpen && (
+                <div className="absolute right-0 mt-1.5 w-48 py-1 rounded-lg bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 shadow-xl z-30">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUploadMenuOpen(false);
+                      fileInputRef.current?.click();
+                    }}
+                    className="w-full px-3 py-2 text-left text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  >
+                    Upload Files...
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUploadMenuOpen(false);
+                      folderInputRef.current?.click();
+                    }}
+                    className="w-full px-3 py-2 text-left text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  >
+                    Upload Folder (recursive)...
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {mode === 'drawer' && (
               <button
                 type="button"
                 onClick={() => setDrawerOpen(false)}
-                className="px-3.5 py-1.5 rounded-lg text-xs font-medium border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap shrink-0"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+                aria-label="Close drawer"
               >
-                收起面板
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white whitespace-nowrap shrink-0 transition-colors"
-              >
-                上传文件
+                <X className="w-4 h-4" />
               </button>
             )}
           </div>
         </header>
 
-        {/* Workspace Toolbar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-[#0B0F17] shrink-0">
-          {/* Left: Up-level + Full Sandbox Breadcrumbs + Directory/Editor Switch */}
-          <div className="flex items-center gap-2 min-w-0">
-            <button
-              type="button"
-              disabled={!parentDir}
-              onClick={() => parentDir && handleSelectDir(parentDir)}
-              className="p-1.5 rounded-md border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors"
-              title="返回上级目录"
-              aria-label="返回上级目录"
-            >
-              <ArrowUp className="w-3.5 h-3.5" />
-            </button>
+        {/* Hidden native inputs for unified Upload menu */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = Array.from(e.target.files || []);
+            e.target.value = '';
+            void handleUploadBatch(files);
+          }}
+        />
+        <input
+          ref={folderInputRef}
+          type="file"
+          multiple
+          {...({ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>)}
+          className="hidden"
+          onChange={(e) => {
+            const files = Array.from(e.target.files || []);
+            const rels = files.map(
+              (f) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name
+            );
+            e.target.value = '';
+            void handleUploadBatch(files, rels);
+          }}
+        />
 
-            <div className="flex items-center gap-1 text-xs font-mono overflow-x-auto sandbox-scroll">
-              {breadcrumbs.map((crumb, idx) => {
-                const isLast = idx === breadcrumbs.length - 1;
-                return (
-                  <React.Fragment key={crumb.path}>
-                    {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
-                    <button
-                      type="button"
-                      onClick={() => handleSelectDir(crumb.path)}
-                      className={`px-1.5 py-0.5 rounded hover:bg-slate-200/70 dark:hover:bg-slate-800 whitespace-nowrap ${
-                        isLast && centerView === 'directory'
-                          ? 'text-sky-600 dark:text-sky-400 font-semibold'
-                          : 'text-slate-600 dark:text-slate-300'
-                      }`}
-                    >
-                      {crumb.name}
-                    </button>
-                  </React.Fragment>
-                );
-              })}
-            </div>
+        {/* Workspace Toolbar (only shown when explorer is visible) */}
+        {layoutView !== 'terminal' && (
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-[#0B0F17] shrink-0">
+            {/* Left: Up-level + Breadcrumbs + View Switch */}
+            <div className="flex items-center gap-2 min-w-0">
+              <button
+                type="button"
+                disabled={!parentDir}
+                onClick={() => parentDir && handleSelectDir(parentDir)}
+                className="p-1.5 rounded-md border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors"
+                title="Parent directory"
+                aria-label="Parent directory"
+              >
+                <ArrowUp className="w-3.5 h-3.5" />
+              </button>
 
-            {openTabs.length > 0 && (
-              <div className="hidden sm:flex items-center gap-1 ml-2 p-0.5 rounded-md bg-slate-200/70 dark:bg-slate-800/80">
-                <button
-                  type="button"
-                  onClick={() => setCenterView('directory')}
-                  className={`px-2.5 py-1 rounded text-xs font-medium whitespace-nowrap transition-colors ${
-                    centerView === 'directory'
-                      ? 'bg-white dark:bg-[#0B0F17] text-slate-900 dark:text-slate-100'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                  }`}
-                >
-                  目录列表
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCenterView('editor')}
-                  className={`px-2.5 py-1 rounded text-xs font-medium whitespace-nowrap transition-colors ${
-                    centerView === 'editor'
-                      ? 'bg-white dark:bg-[#0B0F17] text-slate-900 dark:text-slate-100'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                  }`}
-                >
-                  打开文件 ({openTabs.length})
-                </button>
+              <div className="flex items-center gap-1 text-xs font-mono overflow-x-auto sandbox-scroll">
+                {breadcrumbs.map((crumb, idx) => {
+                  const isLast = idx === breadcrumbs.length - 1;
+                  return (
+                    <React.Fragment key={crumb.path}>
+                      {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                      <button
+                        type="button"
+                        onClick={() => handleSelectDir(crumb.path)}
+                        className={`px-1.5 py-0.5 rounded hover:bg-slate-200/70 dark:hover:bg-slate-800 whitespace-nowrap ${
+                          isLast && centerView === 'directory'
+                            ? 'text-sky-600 dark:text-sky-400 font-semibold'
+                            : 'text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        {crumb.name}
+                      </button>
+                    </React.Fragment>
+                  );
+                })}
               </div>
-            )}
-          </div>
 
-          {/* Right: Search Filter, Upload, ZIP Download, Create, Theme */}
-          <div className="flex items-center gap-1.5 shrink-0">
-            <div className="relative hidden lg:flex items-center mr-1">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 pointer-events-none" />
-              <input
-                type="text"
-                value={searchFilter}
-                onChange={(e) => setSearchFilter(e.target.value)}
-                placeholder="筛选当前目录..."
-                className="w-40 pl-7 pr-6 py-1 text-xs rounded-md bg-white dark:bg-[#131A26] border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:border-sky-500"
-              />
-              {searchFilter && (
-                <button
-                  type="button"
-                  onClick={() => setSearchFilter('')}
-                  className="absolute right-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-                  aria-label="清除筛选"
-                >
-                  <X className="w-3 h-3" />
-                </button>
+              {openTabs.length > 0 && (
+                <div className="hidden sm:flex items-center gap-1 ml-2 p-0.5 rounded-md bg-slate-200/70 dark:bg-slate-800/80">
+                  <button
+                    type="button"
+                    onClick={() => setCenterView('directory')}
+                    className={`px-2.5 py-1 rounded text-xs font-medium whitespace-nowrap transition-colors ${
+                      centerView === 'directory'
+                        ? 'bg-white dark:bg-[#0B0F17] text-slate-900 dark:text-slate-100'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    Files
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCenterView('editor')}
+                    className={`px-2.5 py-1 rounded text-xs font-medium whitespace-nowrap transition-colors ${
+                      centerView === 'editor'
+                        ? 'bg-white dark:bg-[#0B0F17] text-slate-900 dark:text-slate-100'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    Open ({openTabs.length})
+                  </button>
+                </div>
               )}
             </div>
 
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                const files = Array.from(e.target.files || []);
-                e.target.value = '';
-                void handleUploadBatch(files);
-              }}
-            />
-            <input
-              ref={folderInputRef}
-              type="file"
-              multiple
-              {...({ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>)}
-              className="hidden"
-              onChange={(e) => {
-                const files = Array.from(e.target.files || []);
-                const rels = files.map(
-                  (f) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name
-                );
-                e.target.value = '';
-                void handleUploadBatch(files, rels);
-              }}
-            />
+            {/* Right: Filter, New File, New Folder, Download ZIP, Theme */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <div className="relative hidden lg:flex items-center mr-1">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 pointer-events-none" />
+                <input
+                  type="text"
+                  value={searchFilter}
+                  onChange={(e) => setSearchFilter(e.target.value)}
+                  placeholder="Filter..."
+                  className="w-36 pl-7 pr-6 py-1 text-xs rounded-md bg-white dark:bg-[#131A26] border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:border-sky-500"
+                />
+                {searchFilter && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchFilter('')}
+                    className="absolute right-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                    aria-label="Clear filter"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
 
-            <button
-              type="button"
-              onClick={() => folderInputRef.current?.click()}
-              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-white dark:bg-[#131A26] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap transition-colors"
-            >
-              <FolderUp className="w-3.5 h-3.5 text-sky-500" />
-              <span>上传文件夹</span>
-            </button>
+              <button
+                type="button"
+                onClick={() => setDialog({ kind: 'new-file', baseDir: currentDir, value: '' })}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800 whitespace-nowrap transition-colors"
+              >
+                <FilePlus className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">New File</span>
+              </button>
 
-            <a
-              href={client.getDownloadZipUrl([currentDir || '/app/applet'])}
-              download
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-white dark:bg-[#131A26] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap transition-colors"
-              title="将当前目录打包为 ZIP 下载"
-            >
-              <FolderArchive className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
-              <span>打包下载</span>
-            </a>
+              <button
+                type="button"
+                onClick={() => setDialog({ kind: 'new-folder', baseDir: currentDir, value: '' })}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800 whitespace-nowrap transition-colors"
+              >
+                <FolderPlus className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">New Folder</span>
+              </button>
 
-            <button
-              type="button"
-              onClick={() => setDialog({ kind: 'new-file', baseDir: currentDir, value: '' })}
-              className="hidden xl:flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800 whitespace-nowrap transition-colors"
-            >
-              <FilePlus className="w-3.5 h-3.5" />
-              <span>新建文件</span>
-            </button>
+              <a
+                href={client.getDownloadZipUrl([currentDir || '/app/applet'])}
+                download
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-white dark:bg-[#131A26] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap transition-colors"
+                title="Download current directory as ZIP"
+              >
+                <FolderArchive className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
+                <span>Download ZIP</span>
+              </a>
 
-            <button
-              type="button"
-              onClick={() => setDialog({ kind: 'new-folder', baseDir: currentDir, value: '' })}
-              className="hidden xl:flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800 whitespace-nowrap transition-colors"
-            >
-              <FolderPlus className="w-3.5 h-3.5" />
-              <span>新建目录</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => void refreshAll()}
-              className="p-1.5 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors"
-              title="刷新"
-              aria-label="刷新"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loadingList ? 'animate-spin' : ''}`} />
-            </button>
-
-            <button
-              type="button"
-              onClick={toggleTheme}
-              className="p-1.5 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors"
-              title={isDark ? '切换到浅色模式' : '切换到深色模式'}
-              aria-label="切换主题"
-            >
-              {isDark ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-            </button>
+              <button
+                type="button"
+                onClick={toggleTheme}
+                className="p-1.5 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors"
+                title={isDark ? 'Light theme' : 'Dark theme'}
+                aria-label="Toggle theme"
+              >
+                {isDark ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Upload progress or status notice */}
         {(uploadProgress !== null || bannerNotice) && (
@@ -698,7 +700,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
             {uploadProgress !== null ? (
               <div className="flex items-center gap-3 w-full">
                 <span className="text-sky-600 dark:text-sky-400 font-medium whitespace-nowrap">
-                  正在上传...
+                  Uploading...
                 </span>
                 <div className="flex-1 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
                   <div
@@ -736,19 +738,14 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
           {/* Upper Area: Sidebar Tree + File List/Editor */}
           {layoutView !== 'terminal' && (
             <div className="flex-1 min-h-0 flex overflow-hidden">
-              <div className="hidden md:block w-[260px] shrink-0 h-full">
+              <div className="hidden md:block w-[250px] shrink-0 h-full">
                 <FileTree
                   client={client}
                   currentDir={currentDir}
-                  bookmarks={info?.bookmarks || []}
-                  allowedRoots={info?.allowedRoots || ['/']}
                   showHidden={showHidden}
                   refreshNonce={treeRefreshNonce}
                   onToggleHidden={() => setShowHidden((v) => !v)}
-                  onRefresh={() => void refreshAll()}
                   onSelectDir={handleSelectDir}
-                  onCreateFile={(dir) => setDialog({ kind: 'new-file', baseDir: dir, value: '' })}
-                  onCreateFolder={(dir) => setDialog({ kind: 'new-folder', baseDir: dir, value: '' })}
                 />
               </div>
 
@@ -763,7 +760,6 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                     onCloseTab={handleCloseTab}
                     onChangeContent={handleChangeFileContent}
                     onSaveFile={handleSaveFile}
-                    onRevertFile={handleRevertFile}
                   />
                 ) : (
                   <div className="flex-1 min-h-0 flex flex-col">
@@ -771,7 +767,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                     {selectedPaths.size > 0 && (
                       <div className="flex items-center justify-between gap-3 px-4 py-2 bg-sky-500/10 border-b border-sky-500/20 text-xs">
                         <span className="font-medium text-sky-700 dark:text-sky-300 tabular-nums">
-                          已选择 {selectedPaths.size} 项
+                          {selectedPaths.size} selected
                         </span>
                         <div className="flex items-center gap-2">
                           <a
@@ -780,7 +776,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                             className="flex items-center gap-1 px-2.5 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white font-medium whitespace-nowrap"
                           >
                             <Download className="w-3.5 h-3.5" />
-                            <span>打包下载所选</span>
+                            <span>Download ZIP</span>
                           </a>
                           <button
                             type="button"
@@ -788,14 +784,14 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                             className="flex items-center gap-1 px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-medium whitespace-nowrap"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
-                            <span>删除所选</span>
+                            <span>Delete</span>
                           </button>
                           <button
                             type="button"
                             onClick={() => setSelectedPaths(new Set())}
                             className="px-2 py-1 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
                           >
-                            取消
+                            Clear
                           </button>
                         </div>
                       </div>
@@ -816,10 +812,10 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                         <div className="h-full flex flex-col items-center justify-center p-8 text-center">
                           <Folder className="w-10 h-10 text-slate-300 dark:text-slate-700 mb-3" />
                           <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                            {searchFilter ? '未找到匹配的文件或目录' : '当前目录为空'}
+                            {searchFilter ? 'No matching files or folders' : 'Empty directory'}
                           </p>
                           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                            你可以拖放本地文件或文件夹到此窗口上传，或点击下方按钮新建文件
+                            Drag and drop files or folders here to upload, or create a new file.
                           </p>
                           <div className="mt-4 flex items-center gap-2">
                             <button
@@ -827,14 +823,14 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                               onClick={() => fileInputRef.current?.click()}
                               className="px-3 py-1.5 rounded-md text-xs font-medium bg-sky-600 hover:bg-sky-500 text-white"
                             >
-                              上传文件
+                              Upload Files
                             </button>
                             <button
                               type="button"
                               onClick={() => setDialog({ kind: 'new-file', baseDir: currentDir, value: '' })}
                               className="px-3 py-1.5 rounded-md text-xs font-medium border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
                             >
-                              新建文件
+                              New File
                             </button>
                           </div>
                         </div>
@@ -847,7 +843,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                                   type="button"
                                   onClick={toggleSelectAll}
                                   className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                                  aria-label="全选"
+                                  aria-label="Select all"
                                 >
                                   {selectedPaths.size === filteredEntries.length && filteredEntries.length > 0 ? (
                                     <CheckSquare className="w-3.5 h-3.5 text-sky-500" />
@@ -856,11 +852,10 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                                   )}
                                 </button>
                               </th>
-                              <th className="py-2.5 pr-3">名称</th>
-                              <th className="py-2.5 px-3 w-28 hidden lg:table-cell">权限</th>
-                              <th className="py-2.5 px-3 w-24 text-right">大小</th>
-                              <th className="py-2.5 px-3 w-36 text-right hidden md:table-cell">修改时间</th>
-                              <th className="py-2.5 pl-3 pr-4 w-36 text-right">操作</th>
+                              <th className="py-2.5 pr-3">Name</th>
+                              <th className="py-2.5 px-3 w-24 text-right">Size</th>
+                              <th className="py-2.5 px-3 w-36 text-right hidden md:table-cell">Modified</th>
+                              <th className="py-2.5 pl-3 pr-4 w-28 text-right">Actions</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70 text-[13px]">
@@ -882,7 +877,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                                       type="button"
                                       onClick={() => toggleSelectEntry(entry.path)}
                                       className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                                      aria-label={`选择 ${entry.name}`}
+                                      aria-label={`Select ${entry.name}`}
                                     >
                                       {isChecked ? (
                                         <CheckSquare className="w-3.5 h-3.5 text-sky-500" />
@@ -914,9 +909,6 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                                       )}
                                     </button>
                                   </td>
-                                  <td className="px-3 text-xs text-slate-500 dark:text-slate-400 hidden lg:table-cell font-mono">
-                                    {entry.modeStr}
-                                  </td>
                                   <td className="px-3 text-right text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
                                     {isDir ? '—' : formatBytes(entry.size)}
                                   </td>
@@ -924,38 +916,24 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                                     {formatTimestamp(entry.mtimeMs)}
                                   </td>
                                   <td className="pl-3 pr-4 text-right">
-                                    <div className="inline-flex items-center gap-1 opacity-80 group-hover:opacity-100">
+                                    <div className="inline-flex items-center gap-1 opacity-75 group-hover:opacity-100">
                                       {isDir ? (
-                                        <>
-                                          <button
-                                            type="button"
-                                            onClick={() => {
-                                              if (layoutView === 'explorer') setLayoutView('split');
-                                              setPendingOpenCwd({ path: entry.path, nonce: Date.now() });
-                                            }}
-                                            className="p-1.5 rounded text-slate-500 hover:text-sky-500 hover:bg-slate-200/70 dark:hover:bg-slate-800"
-                                            title="在此目录打开终端"
-                                            aria-label="在此目录打开终端"
-                                          >
-                                            <TerminalIcon className="w-3.5 h-3.5" />
-                                          </button>
-                                          <a
-                                            href={client.getDownloadZipUrl([entry.path])}
-                                            download
-                                            className="p-1.5 rounded text-slate-500 hover:text-sky-500 hover:bg-slate-200/70 dark:hover:bg-slate-800"
-                                            title="打包下载目录 (.zip)"
-                                            aria-label="打包下载目录"
-                                          >
-                                            <Download className="w-3.5 h-3.5" />
-                                          </a>
-                                        </>
+                                        <a
+                                          href={client.getDownloadZipUrl([entry.path])}
+                                          download
+                                          className="p-1.5 rounded text-slate-500 hover:text-sky-500 hover:bg-slate-200/70 dark:hover:bg-slate-800"
+                                          title="Download directory as ZIP"
+                                          aria-label="Download directory as ZIP"
+                                        >
+                                          <Download className="w-3.5 h-3.5" />
+                                        </a>
                                       ) : (
                                         <a
                                           href={client.getDownloadUrl(entry.path)}
                                           download={entry.name}
                                           className="p-1.5 rounded text-slate-500 hover:text-sky-500 hover:bg-slate-200/70 dark:hover:bg-slate-800"
-                                          title="下载文件"
-                                          aria-label="下载文件"
+                                          title="Download file"
+                                          aria-label="Download file"
                                         >
                                           <Download className="w-3.5 h-3.5" />
                                         </a>
@@ -967,8 +945,8 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                                           setDialog({ kind: 'rename', entry, value: entry.name })
                                         }
                                         className="p-1.5 rounded text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-200/70 dark:hover:bg-slate-800"
-                                        title="重命名"
-                                        aria-label="重命名"
+                                        title="Rename"
+                                        aria-label="Rename"
                                       >
                                         <Pencil className="w-3.5 h-3.5" />
                                       </button>
@@ -977,8 +955,8 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                                         type="button"
                                         onClick={() => setDialog({ kind: 'delete', paths: [entry.path] })}
                                         className="p-1.5 rounded text-slate-500 hover:text-rose-500 hover:bg-slate-200/70 dark:hover:bg-slate-800"
-                                        title="删除"
-                                        aria-label="删除"
+                                        title="Delete"
+                                        aria-label="Delete"
                                       >
                                         <Trash2 className="w-3.5 h-3.5" />
                                       </button>
@@ -1004,7 +982,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                 resizingRef.current = true;
               }}
               className="h-1.5 bg-slate-200/70 dark:bg-slate-800/80 hover:bg-sky-500/60 cursor-row-resize transition-colors shrink-0"
-              title="拖动调整终端窗口高度"
+              title="Drag to resize terminal"
             />
           )}
 
@@ -1021,10 +999,8 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
               <TerminalPane
                 client={client}
                 currentDir={currentDir || '/app/applet'}
-                pendingOpenCwd={pendingOpenCwd}
                 isMaximized={terminalMaximized}
                 onToggleMaximize={() => setTerminalMaximized((v) => !v)}
-                onFilesystemChanged={() => void refreshAll()}
               />
             </div>
           )}
@@ -1035,8 +1011,8 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
           <div className="absolute inset-0 z-40 flex items-center justify-center bg-sky-950/75 backdrop-blur-xs border-2 border-dashed border-sky-400 m-2 rounded-xl pointer-events-none">
             <div className="text-center text-white">
               <Upload className="w-10 h-10 mx-auto mb-2 text-sky-300" />
-              <p className="text-base font-semibold">释放即可上传文件或文件夹</p>
-              <p className="mt-1 text-xs text-sky-200 font-mono">目标目录: {currentDir}</p>
+              <p className="text-base font-semibold">Drop files or folders to upload</p>
+              <p className="mt-1 text-xs text-sky-200 font-mono">Destination: {currentDir}</p>
             </div>
           </div>
         )}
@@ -1053,16 +1029,16 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
               className="w-full max-w-md p-5 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 shadow-2xl space-y-4"
             >
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                {dialog.kind === 'new-file' && '新建文件'}
-                {dialog.kind === 'new-folder' && '新建文件夹'}
-                {dialog.kind === 'rename' && `重命名: ${dialog.entry.name}`}
-                {dialog.kind === 'delete' && `确认删除 (${dialog.paths.length} 项)`}
+                {dialog.kind === 'new-file' && 'New File'}
+                {dialog.kind === 'new-folder' && 'New Folder'}
+                {dialog.kind === 'rename' && `Rename: ${dialog.entry.name}`}
+                {dialog.kind === 'delete' && `Confirm Delete (${dialog.paths.length})`}
               </h3>
 
               {dialog.kind === 'delete' ? (
                 <div className="space-y-2">
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    以下文件或目录将被永久从沙箱删除：
+                    The following item(s) will be permanently deleted:
                   </p>
                   <div className="max-h-36 overflow-y-auto p-2.5 rounded-lg bg-slate-100 dark:bg-[#0B0F17] border border-slate-200 dark:border-slate-800 font-mono text-xs text-rose-600 dark:text-rose-400 space-y-1">
                     {dialog.paths.map((p) => (
@@ -1075,7 +1051,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
               ) : (
                 <div className="space-y-1.5">
                   <label className="block text-xs text-slate-500 dark:text-slate-400 font-mono">
-                    {dialog.kind === 'rename' ? '输入新名称' : `目录: ${dialog.baseDir}`}
+                    {dialog.kind === 'rename' ? 'New name' : `Directory: ${dialog.baseDir}`}
                   </label>
                   <input
                     type="text"
@@ -1083,10 +1059,10 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                     onChange={(e) => setDialog({ ...dialog, value: e.target.value })}
                     placeholder={
                       dialog.kind === 'new-file'
-                        ? '例如: helper.ts'
+                        ? 'e.g. helper.ts'
                         : dialog.kind === 'new-folder'
-                          ? '例如: logs'
-                          : '新名称'
+                          ? 'e.g. logs'
+                          : 'New name'
                     }
                     autoFocus
                     className="w-full px-3 py-2 text-sm font-mono rounded-lg bg-slate-50 dark:bg-[#0B0F17] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:border-sky-500"
@@ -1100,7 +1076,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                   onClick={() => setDialog(null)}
                   className="px-3.5 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
                 >
-                  取消
+                  Cancel
                 </button>
                 <button
                   type="submit"
@@ -1110,7 +1086,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
                       : 'bg-sky-600 hover:bg-sky-500'
                   }`}
                 >
-                  {dialog.kind === 'delete' ? '确认删除' : '确定'}
+                  {dialog.kind === 'delete' ? 'Delete' : 'Confirm'}
                 </button>
               </div>
             </form>
@@ -1120,7 +1096,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
     );
   };
 
-  if (internalMode === 'drawer') {
+  if (mode === 'drawer') {
     return (
       <>
         {!drawerOpen && (
@@ -1130,7 +1106,7 @@ export const SandboxStudio: React.FC<SandboxStudioProps> = ({
             className="fixed bottom-5 right-5 z-40 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-sky-600 text-white text-xs font-semibold shadow-xl border border-slate-700 dark:border-sky-500 hover:brightness-110 transition-all"
           >
             <TerminalIcon className="w-4 h-4" />
-            <span>沙箱文件 & 终端</span>
+            <span>Sandbox</span>
           </button>
         )}
 

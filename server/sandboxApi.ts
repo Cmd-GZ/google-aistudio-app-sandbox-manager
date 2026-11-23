@@ -52,7 +52,6 @@ const MIME_MAP: Record<string, string> = {
   '.jsx': 'text/plain; charset=utf-8',
 };
 
-// Python PTY bridge providing a genuine interactive TTY with resize (TIOCSWINSZ) support
 const PTY_PY_SCRIPT = `
 import fcntl
 import os
@@ -182,21 +181,6 @@ except OSError:
 sys.exit(exit_code)
 `;
 
-function formatMode(mode: number): string {
-  const perms = [
-    mode & 0o400 ? 'r' : '-',
-    mode & 0o200 ? 'w' : '-',
-    mode & 0o100 ? 'x' : '-',
-    mode & 0o040 ? 'r' : '-',
-    mode & 0o020 ? 'w' : '-',
-    mode & 0o010 ? 'x' : '-',
-    mode & 0o004 ? 'r' : '-',
-    mode & 0o002 ? 'w' : '-',
-    mode & 0o001 ? 'x' : '-',
-  ];
-  return perms.join('');
-}
-
 function isBufferBinary(buf: Buffer): boolean {
   const sampleLen = Math.min(buf.length, 8192);
   for (let i = 0; i < sampleLen; i++) {
@@ -218,7 +202,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
     storage: multer.memoryStorage(),
     limits: {
       fileSize: maxUploadBytes,
-      files: 200,
+      files: 500,
     },
   });
 
@@ -226,7 +210,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
     const raw = typeof rawInput === 'string' && rawInput.trim() ? rawInput.trim() : defaultDir;
     const resolved = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(defaultDir, raw);
     if (mustExist && !fs.existsSync(resolved)) {
-      throw new Error(`路径不存在: ${resolved}`);
+      throw new Error(`Path not found: ${resolved}`);
     }
     return resolved;
   }
@@ -253,35 +237,11 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
     });
   });
 
-  // --- Workspace Info & Bookmarks ---
+  // --- Workspace Info ---
   router.get('/info', (_req: Request, res: Response) => {
-    const bookmarkCandidates = [
-      { label: '当前工作区', path: defaultDir },
-      { label: '/app', path: '/app' },
-      { label: '/tmp', path: '/tmp' },
-      { label: '/workspace', path: '/workspace' },
-      { label: '/home', path: '/home' },
-      { label: '/root', path: '/root' },
-      { label: '/etc', path: '/etc' },
-      { label: '根目录 /', path: '/' },
-    ];
-
-    const seen = new Set<string>();
-    const bookmarks: Array<{ label: string; path: string }> = [];
-    for (const item of bookmarkCandidates) {
-      const resolved = path.resolve(item.path);
-      if (seen.has(resolved)) continue;
-      if (fs.existsSync(resolved)) {
-        seen.add(resolved);
-        bookmarks.push({ label: item.label, path: resolved });
-      }
-    }
-
     res.json({
       defaultPath: defaultDir,
       rootName: path.basename(defaultDir) || '/',
-      allowedRoots: ['/'],
-      bookmarks,
       platform: process.platform,
       arch: process.arch,
       nodeVersion: process.version,
@@ -296,7 +256,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
       const showHidden = req.query.showHidden === 'true';
       const stat = fs.statSync(targetDir);
       if (!stat.isDirectory()) {
-        res.status(400).json({ error: '目标路径不是目录' });
+        res.status(400).json({ error: 'Target path is not a directory' });
         return;
       }
 
@@ -308,13 +268,11 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
           let type: 'dir' | 'file' | 'symlink' = d.isDirectory() ? 'dir' : d.isSymbolicLink() ? 'symlink' : 'file';
           let size = 0;
           let mtimeMs = 0;
-          let modeStr = '---------';
           let linkTarget: string | undefined;
 
           try {
             const lst = fs.lstatSync(full);
             mtimeMs = lst.mtimeMs;
-            modeStr = formatMode(lst.mode);
             if (lst.isSymbolicLink()) {
               linkTarget = fs.readlinkSync(full);
               try {
@@ -339,7 +297,6 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
             type,
             size,
             mtimeMs,
-            modeStr,
             extension: type === 'dir' ? '' : path.extname(d.name).toLowerCase(),
             linkTarget,
           };
@@ -360,7 +317,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
         entries,
       });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : '读取目录失败' });
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to list directory' });
     }
   });
 
@@ -391,7 +348,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
       dirs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
       res.json({ path: targetDir, dirs });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : '读取目录树失败' });
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to read directory tree' });
     }
   });
 
@@ -401,7 +358,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
       const target = resolvePath(req.query.path, true);
       const stat = fs.statSync(target);
       if (stat.isDirectory()) {
-        res.status(400).json({ error: '不能将目录作为文件读取' });
+        res.status(400).json({ error: 'Cannot read a directory as a file' });
         return;
       }
 
@@ -453,7 +410,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
         content: isBinary ? '' : buf.toString('utf8'),
       });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : '读取文件失败' });
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to read file' });
     }
   });
 
@@ -463,7 +420,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
       const target = resolvePath(req.query.path, true);
       const stat = fs.statSync(target);
       if (stat.isDirectory()) {
-        res.status(400).json({ error: '目标为目录' });
+        res.status(400).json({ error: 'Target is a directory' });
         return;
       }
       const ext = path.extname(target).toLowerCase();
@@ -471,7 +428,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
       res.setHeader('Content-Type', mime);
       res.sendFile(target);
     } catch (err) {
-      res.status(404).json({ error: err instanceof Error ? err.message : '文件未找到' });
+      res.status(404).json({ error: err instanceof Error ? err.message : 'File not found' });
     }
   });
 
@@ -481,12 +438,12 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
       const target = resolvePath(req.query.path, true);
       const stat = fs.statSync(target);
       if (stat.isDirectory()) {
-        res.status(400).json({ error: '目录请使用打包下载' });
+        res.status(400).json({ error: 'Use ZIP download for directories' });
         return;
       }
       res.download(target, path.basename(target));
     } catch (err) {
-      res.status(404).json({ error: err instanceof Error ? err.message : '下载失败' });
+      res.status(404).json({ error: err instanceof Error ? err.message : 'Download failed' });
     }
   });
 
@@ -576,7 +533,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
       res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(zipName)}"`);
       res.send(buffer);
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : '打包下载失败' });
+      res.status(400).json({ error: err instanceof Error ? err.message : 'ZIP creation failed' });
     }
   });
 
@@ -586,7 +543,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
       const rawPath = typeof req.body?.path === 'string' ? req.body.path : '';
       const content = typeof req.body?.content === 'string' ? req.body.content : '';
       if (!rawPath.trim()) {
-        res.status(400).json({ error: '请提供有效文件路径' });
+        res.status(400).json({ error: 'File path is required' });
         return;
       }
       const target = resolvePath(rawPath);
@@ -600,7 +557,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
         mtimeMs: st.mtimeMs,
       });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : '写入文件失败' });
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to write file' });
     }
   });
 
@@ -609,14 +566,14 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
     try {
       const rawPath = typeof req.body?.path === 'string' ? req.body.path : '';
       if (!rawPath.trim()) {
-        res.status(400).json({ error: '请提供目录名称' });
+        res.status(400).json({ error: 'Directory path is required' });
         return;
       }
       const target = resolvePath(rawPath);
       fs.mkdirSync(target, { recursive: true });
       res.json({ ok: true, path: target });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : '创建目录失败' });
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to create directory' });
     }
   });
 
@@ -626,20 +583,20 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
       const oldRaw = typeof req.body?.oldPath === 'string' ? req.body.oldPath : '';
       const newRaw = typeof req.body?.newPath === 'string' ? req.body.newPath : '';
       if (!oldRaw.trim() || !newRaw.trim()) {
-        res.status(400).json({ error: '请提供源路径与目标路径' });
+        res.status(400).json({ error: 'Both oldPath and newPath are required' });
         return;
       }
       const oldTarget = resolvePath(oldRaw, true);
       const newTarget = resolvePath(newRaw);
       if (fs.existsSync(newTarget)) {
-        res.status(409).json({ error: '目标路径已存在' });
+        res.status(409).json({ error: 'Destination already exists' });
         return;
       }
       fs.mkdirSync(path.dirname(newTarget), { recursive: true });
       fs.renameSync(oldTarget, newTarget);
       res.json({ ok: true, oldPath: oldTarget, newPath: newTarget });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : '重命名失败' });
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Rename failed' });
     }
   });
 
@@ -653,24 +610,24 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
             ? req.body.path
             : '';
       if (!rawPath.trim()) {
-        res.status(400).json({ error: '请提供要删除的路径' });
+        res.status(400).json({ error: 'Path is required' });
         return;
       }
       const target = resolvePath(rawPath, true);
       fs.rmSync(target, { recursive: true, force: true });
       res.json({ ok: true, deleted: target });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : '删除失败' });
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Delete failed' });
     }
   });
 
-  // --- Upload Files / Folders ---
-  router.post('/fs/upload', upload.array('files', 200), (req: Request, res: Response) => {
+  // --- Upload Files / Directories Recursively ---
+  router.post('/fs/upload', upload.array('files', 500), (req: Request, res: Response) => {
     try {
       const targetDir = resolvePath(req.body?.targetDir || defaultDir, true);
       const dirStat = fs.statSync(targetDir);
       if (!dirStat.isDirectory()) {
-        res.status(400).json({ error: '上传目标不是目录' });
+        res.status(400).json({ error: 'Upload destination is not a directory' });
         return;
       }
 
@@ -688,7 +645,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
 
       const files = (req.files as Express.Multer.File[]) || [];
       if (files.length === 0) {
-        res.status(400).json({ error: '未收到上传文件' });
+        res.status(400).json({ error: 'No files uploaded' });
         return;
       }
 
@@ -705,11 +662,11 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
 
       res.json({ ok: true, uploaded: saved });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : '上传失败' });
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Upload failed' });
     }
   });
 
-  // --- Real PTY Interactive Terminal Routes (standard root Unix shell env) ---
+  // --- Real PTY Interactive Terminal Routes ---
   function appendHistory(session: TerminalSession, chunk: Buffer): void {
     const combined = Buffer.concat([session.history, chunk]);
     session.history =
@@ -831,14 +788,14 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
           exitCode: session.exitCode,
         });
       } catch (err) {
-        res.status(400).json({ error: err instanceof Error ? err.message : '创建终端失败' });
+        res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to create terminal session' });
       }
     });
 
     router.get('/terminal/sessions/:id/stream', (req: Request, res: Response) => {
       const session = sessions.get(req.params.id);
       if (!session) {
-        res.status(404).json({ error: '终端会话不存在' });
+        res.status(404).json({ error: 'Terminal session not found' });
         return;
       }
 
@@ -872,7 +829,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
     router.post('/terminal/sessions/:id/input', (req: Request, res: Response) => {
       const session = sessions.get(req.params.id);
       if (!session || !session.alive) {
-        res.status(404).json({ error: '活动终端会话不存在' });
+        res.status(404).json({ error: 'Active terminal session not found' });
         return;
       }
       const rawData = typeof req.body?.data === 'string' ? req.body.data : '';
@@ -886,7 +843,7 @@ export function createSandboxRouter(options: SandboxRouterOptions = {}): Router 
     router.post('/terminal/sessions/:id/resize', (req: Request, res: Response) => {
       const session = sessions.get(req.params.id);
       if (!session || !session.alive) {
-        res.status(404).json({ error: '活动终端会话不存在' });
+        res.status(404).json({ error: 'Active terminal session not found' });
         return;
       }
       const cols = Math.max(10, Math.min(500, Math.floor(Number(req.body?.cols || 100))));

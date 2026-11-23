@@ -3,7 +3,6 @@ export type { SandboxStudioProps } from './SandboxStudio';
 export { createSandboxClient } from './api';
 export type { SandboxClient } from './api';
 export type {
-  BookmarkItem,
   BreadcrumbItem,
   DirChildItem,
   EntryType,

@@ -6,18 +6,12 @@ export interface FileEntry {
   type: EntryType;
   size: number;
   mtimeMs: number;
-  modeStr: string;
   extension: string;
   linkTarget?: string;
 }
 
 export interface BreadcrumbItem {
   name: string;
-  path: string;
-}
-
-export interface BookmarkItem {
-  label: string;
   path: string;
 }
 
@@ -41,8 +35,6 @@ export interface FileReadResult {
 export interface WorkspaceInfo {
   defaultPath: string;
   rootName: string;
-  allowedRoots: string[];
-  bookmarks: BookmarkItem[];
   platform: string;
   arch: string;
   nodeVersion: string;

@@ -5,9 +5,7 @@ import {
   Download,
   Eye,
   FileCode2,
-  RotateCcw,
   Save,
-  WrapText,
   X,
 } from 'lucide-react';
 import { OpenFileTab } from './types';
@@ -16,13 +14,12 @@ import { formatBytes, formatTimestamp } from './utils';
 interface FilePreviewEditorProps {
   tabs: OpenFileTab[];
   activePath: string | null;
-  rawUrlBuilder: (relPath: string) => string;
-  downloadUrlBuilder: (relPath: string) => string;
+  rawUrlBuilder: (absPath: string) => string;
+  downloadUrlBuilder: (absPath: string) => string;
   onSelectTab: (path: string) => void;
   onCloseTab: (path: string) => void;
   onChangeContent: (path: string, content: string) => void;
   onSaveFile: (path: string) => Promise<void>;
-  onRevertFile: (path: string) => void;
 }
 
 function renderSafeMarkdown(source: string): React.ReactNode {
@@ -110,11 +107,9 @@ export const FilePreviewEditor: React.FC<FilePreviewEditorProps> = ({
   onCloseTab,
   onChangeContent,
   onSaveFile,
-  onRevertFile,
 }) => {
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [wordWrap, setWordWrap] = useState(false);
   const [markdownPreview, setMarkdownPreview] = useState(false);
 
   const activeTab = tabs.find((t) => t.path === activePath) || null;
@@ -181,7 +176,7 @@ export const FilePreviewEditor: React.FC<FilePreviewEditorProps> = ({
             >
               <span className="truncate max-w-[160px]">{tab.name}</span>
               {tabDirty && (
-                <span className="text-amber-500 font-mono text-[11px]" title="未保存更改">
+                <span className="text-amber-500 font-mono text-[11px]" title="Unsaved changes">
                   *
                 </span>
               )}
@@ -192,7 +187,7 @@ export const FilePreviewEditor: React.FC<FilePreviewEditorProps> = ({
                   onCloseTab(tab.path);
                 }}
                 className="p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-700/60"
-                aria-label={`关闭 ${tab.name}`}
+                aria-label={`Close ${tab.name}`}
               >
                 <X className="w-3 h-3" />
               </button>
@@ -227,44 +222,18 @@ export const FilePreviewEditor: React.FC<FilePreviewEditorProps> = ({
                   }`}
                 >
                   {markdownPreview ? <FileCode2 className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  <span>{markdownPreview ? '源码' : '预览'}</span>
+                  <span>{markdownPreview ? 'Source' : 'Preview'}</span>
                 </button>
               )}
-
-              <button
-                type="button"
-                onClick={() => setWordWrap((w) => !w)}
-                className={`flex items-center gap-1 px-2 py-1.5 rounded-md text-xs whitespace-nowrap transition-colors ${
-                  wordWrap
-                    ? 'bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100'
-                    : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-                }`}
-                title="自动换行"
-              >
-                <WrapText className="w-3.5 h-3.5" />
-              </button>
 
               <button
                 type="button"
                 onClick={handleCopy}
                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap transition-colors"
-                title="复制文件内容"
               >
                 {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copied ? '已复制' : '复制'}</span>
+                <span>{copied ? 'Copied' : 'Copy'}</span>
               </button>
-
-              {isDirty && (
-                <button
-                  type="button"
-                  onClick={() => onRevertFile(activeTab.path)}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap transition-colors"
-                  title="撤销未保存修改"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>撤销</span>
-                </button>
-              )}
 
               <button
                 type="button"
@@ -275,10 +244,10 @@ export const FilePreviewEditor: React.FC<FilePreviewEditorProps> = ({
                     ? 'bg-sky-600 hover:bg-sky-500 text-white'
                     : 'bg-slate-100 dark:bg-slate-800/80 text-slate-400 cursor-not-allowed'
                 }`}
-                title="保存文件 (Ctrl+S / Cmd+S)"
+                title="Save (Ctrl+S / Cmd+S)"
               >
                 <Save className="w-3.5 h-3.5" />
-                <span>{saving ? '保存中...' : '保存'}</span>
+                <span>{saving ? 'Saving...' : 'Save'}</span>
               </button>
             </>
           )}
@@ -289,7 +258,7 @@ export const FilePreviewEditor: React.FC<FilePreviewEditorProps> = ({
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap transition-colors"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>下载</span>
+            <span>Download</span>
           </a>
         </div>
       </div>
@@ -317,7 +286,7 @@ export const FilePreviewEditor: React.FC<FilePreviewEditorProps> = ({
         ) : activeTab.isBinary || activeTab.tooLarge ? (
           <div className="h-full flex flex-col items-center justify-center p-8 text-center">
             <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
-              {activeTab.tooLarge ? '文件超过 2 MB 文本预览限制' : '二进制文件不支持文本编辑'}
+              {activeTab.tooLarge ? 'File exceeds the 2 MB text preview limit' : 'Binary file preview unavailable'}
             </p>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               {activeTab.name} · {formatBytes(activeTab.size)}
@@ -328,14 +297,13 @@ export const FilePreviewEditor: React.FC<FilePreviewEditorProps> = ({
               className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium bg-sky-600 hover:bg-sky-500 text-white transition-colors"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>下载到本地查看</span>
+              <span>Download File</span>
             </a>
           </div>
         ) : markdownPreview && activeTab.extension === '.md' ? (
           <div className="h-full overflow-y-auto sandbox-scroll">{renderSafeMarkdown(activeTab.content)}</div>
         ) : (
           <div className="h-full flex overflow-auto sandbox-scroll font-mono text-[13px] leading-6">
-            {/* Line numbers gutter */}
             <div
               className="py-3 px-3 text-right select-none text-slate-400 dark:text-slate-600 bg-slate-50/80 dark:bg-[#0E131D] border-r border-slate-200/80 dark:border-slate-800/80 tabular-nums shrink-0"
               aria-hidden="true"
@@ -345,12 +313,11 @@ export const FilePreviewEditor: React.FC<FilePreviewEditorProps> = ({
               ))}
             </div>
 
-            {/* Editable code textarea */}
             <textarea
               value={activeTab.content}
               onChange={(e) => onChangeContent(activeTab.path, e.target.value)}
               spellCheck={false}
-              wrap={wordWrap ? 'soft' : 'off'}
+              wrap="off"
               className="flex-1 min-w-0 min-h-full p-3 bg-transparent text-slate-800 dark:text-slate-100 focus:outline-none resize-none font-mono text-[13px] leading-6"
             />
           </div>

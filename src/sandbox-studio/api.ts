@@ -44,7 +44,7 @@ export function createSandboxClient(baseUrl = '/api/sandbox'): SandboxClient {
     const res = await fetch(`${cleanBase}${path}`, init);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(typeof data?.error === 'string' ? data.error : `请求失败 (${res.status})`);
+      throw new Error(typeof data?.error === 'string' ? data.error : `Request failed (${res.status})`);
     }
     return data as T;
   }
@@ -123,13 +123,13 @@ export function createSandboxClient(baseUrl = '/api/sandbox'): SandboxClient {
             if (xhr.status >= 200 && xhr.status < 300) {
               resolve(parsed);
             } else {
-              reject(new Error(parsed.error || `上传失败 (${xhr.status})`));
+              reject(new Error(parsed.error || `Upload failed (${xhr.status})`));
             }
           } catch {
-            reject(new Error(`上传失败 (${xhr.status})`));
+            reject(new Error(`Upload failed (${xhr.status})`));
           }
         };
-        xhr.onerror = () => reject(new Error('网络错误导致上传失败'));
+        xhr.onerror = () => reject(new Error('Network error during upload'));
         xhr.send(form);
       });
     },
